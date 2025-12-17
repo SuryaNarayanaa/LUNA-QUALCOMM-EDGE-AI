@@ -364,4 +364,5 @@ def run_voice_cloning_service():
         logger.error(f"Voice cloning service failed: {e}")
         raise
 
-run_voice_cloning_service()
+if __name__ == "__main__":
+    run_voice_cloning_service()

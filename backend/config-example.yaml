@@ -10,6 +10,6 @@ queue_timeout: 1.0     # Timeout for queue operations in seconds
 
 # Faster-Whisper Model Settings
 model_size: "small"    # Model size: "tiny", "base", "small", "medium", "large-v1", "large-v2", "large-v3"
-device: "cpu"         # Device: "cpu", "cuda", or "auto"
+device: "cuda"         # Device: "cpu", "cuda", or "auto"
 compute_type: "int8"  # Compute type: "float16", "int8", "int16", "float32"
 Hugging_face: ""  # Hugging Face token for private models (optional)

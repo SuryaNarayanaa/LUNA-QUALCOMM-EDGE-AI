@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import VideoUpload from '../../components/layout/VideoPlayerSection'
 import VideoTranscriptEditor from '../../components/editor/VideoTranscriptEditor'
@@ -13,8 +13,17 @@ const VideoView = () => {
   const [fileName, setFileName] = useState("")
   const [loading, setLoading] = useState(false)
   const [transcriptSegments, setTranscriptSegments] = useState([])
-  const [audioUrl, setAudioUrl] = useState(null) // <-- new state
   const [customAudioUrl, setCustomAudioUrl] = useState(null)
+  const [audioDuration, setAudioDuration] = useState(null)
+  const [playerTime, setPlayerTime] = useState(0)
+  const [playerDuration, setPlayerDuration] = useState(0)
+
+  // Clean up object URLs when they change
+  useEffect(() => {
+    return () => {
+      if (customAudioUrl) URL.revokeObjectURL(customAudioUrl)
+    }
+  }, [customAudioUrl])
 
   const handleVideoUpload = async (file,videoUrl) => {
     setLoading(true)
@@ -70,23 +79,37 @@ const VideoView = () => {
   }
 
   // Handle transcript edit and call /edit-transcript/
-  const handleTranscriptEdit = async (updatedSegments) => {
+  const handleTranscriptEdit = async (updatedSegments, options = {}) => {
     setLoading(true)
     try {
-      const response = await fetch('/edit-transcript/', {
+      const response = await fetch('/api/edit-transcript/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ segments: updatedSegments })
+        body: JSON.stringify({ segments: updatedSegments, lip_sync: !!options.lipSync })
       })
       if (!response.ok) {
         throw new Error(`HTTP error! Status: ${response.status}`)
       }
-      // Get audio as blob
-      const audioBlob = await response.blob()
-      const audioUrl = URL.createObjectURL(audioBlob)
-      setCustomAudioUrl(audioUrl)
+
+      const data = await response.json()
+      if (data.audio_url) {
+        setCustomAudioUrl(data.audio_url)
+      }
+      if (data.audio_duration_sec) {
+        setAudioDuration(data.audio_duration_sec)
+      }
+      if (data.lipsync_video_url) {
+        setUploadedVideo(data.lipsync_video_url)
+      }
+
+      return {
+        audioUrl: data.audio_url || null,
+        audioDuration: data.audio_duration_sec || null,
+        lipsyncVideoUrl: data.lipsync_video_url || null,
+      }
     } catch (error) {
       console.error('Error editing transcript:', error)
+      throw error
     } finally {
       setLoading(false)
     }
@@ -102,7 +125,7 @@ const VideoView = () => {
             exit={{ opacity: 0 }}
             className="w-full flex items-center justify-center"
           >
-            <VideoUpload onVideoUpload={handleVideoUpload}  audioUrl = {audioUrl} />
+            <VideoUpload onVideoUpload={handleVideoUpload} audioUrl={customAudioUrl} />
           </motion.div>
         ) : (
           <motion.div 
@@ -119,7 +142,9 @@ const VideoView = () => {
                 uploadedVideo={uploadedVideo} 
                 fileName={fileName}
                 onVideoUpload={handleVideoUpload}
-                customAudioUrl={customAudioUrl}
+                audioUrl={customAudioUrl}
+                onTimeUpdate={setPlayerTime}
+                onDuration={(d) => setPlayerDuration(d || 0)}
               />
             </motion.div>
             <motion.div
@@ -132,7 +157,9 @@ const VideoView = () => {
                 segments={transcriptSegments}
                 isLoading={loading}
                 onTranscriptEdit={handleTranscriptEdit}
-                setaudiourl = {setAudioUrl}
+                onAudioGenerated={(url) => setCustomAudioUrl(url)}
+                currentTime={playerTime}
+                duration={playerDuration || audioDuration || 0}
               />
             </motion.div>
           </motion.div>

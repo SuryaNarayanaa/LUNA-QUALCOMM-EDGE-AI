@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react"
 import { motion } from "framer-motion"
 
-export default function VideoUpload({ onVideoUpload, uploadedVideo, fileName, audioUrl }) {
+export default function VideoUpload({ onVideoUpload, uploadedVideo, fileName, audioUrl, onTimeUpdate, onDuration }) {
     const [dragActive, setDragActive] = useState(false)
     const [uploading, setUploading] = useState(false)
     const inputRef = useRef(null)
@@ -13,7 +13,13 @@ export default function VideoUpload({ onVideoUpload, uploadedVideo, fileName, au
         if (!audioUrl || !videoRef.current || !audioRef.current) return;
         const video = videoRef.current;
         const audio = audioRef.current;
-        // Sync play/pause
+
+        // When a new audio track arrives, pause both and reset to start so nothing auto-plays.
+        video.pause();
+        audio.pause();
+        video.currentTime = 0;
+        audio.currentTime = 0;
+
         const syncPlay = () => {
             audio.currentTime = video.currentTime;
             audio.play();
@@ -85,6 +91,24 @@ export default function VideoUpload({ onVideoUpload, uploadedVideo, fileName, au
             alert("Please upload a video file")
         }
     }
+
+    useEffect(() => {
+        if (!videoRef.current) return;
+        const video = videoRef.current;
+
+        const handleTimeUpdate = () => {
+            if (onTimeUpdate) onTimeUpdate(video.currentTime || 0);
+        };
+        const handleLoaded = () => {
+            if (onDuration) onDuration(video.duration || 0);
+        };
+        video.addEventListener('timeupdate', handleTimeUpdate);
+        video.addEventListener('loadedmetadata', handleLoaded);
+        return () => {
+            video.removeEventListener('timeupdate', handleTimeUpdate);
+            video.removeEventListener('loadedmetadata', handleLoaded);
+        };
+    }, [onTimeUpdate, onDuration]);
 
     return (
         <div className="w-full h-full bg-zinc-900 rounded-lg">
@@ -163,9 +187,9 @@ export default function VideoUpload({ onVideoUpload, uploadedVideo, fileName, au
                             </video>
                             {audioUrl && (
                                 <audio
+                                    key={audioUrl}
                                     ref={audioRef}
                                     src={audioUrl}
-                                    autoPlay
                                     controls={false} // Hide controls for end user
                                     muted={false} // Ensure audio is not muted
                                     style={{ display: 'none' }} // Hide audio element

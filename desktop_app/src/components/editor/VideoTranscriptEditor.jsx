@@ -7,15 +7,22 @@ const VideoTranscriptEditor = ({
   segments: initialSegments,
   isLoading,
   onTranscriptEdit,
-  onAudioGenerated // <-- new prop for parent callback
+  onAudioGenerated, // <-- new prop for parent callback
+  currentTime: externalCurrentTime = 0,
+  duration: externalDuration = 0,
 }) => {
   // State for managing segments
   const [transcriptSegments, setTranscriptSegments] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [editText, setEditText] = useState('');
   const [currentTime, setCurrentTime] = useState(0);
+    useEffect(() => {
+      setCurrentTime(externalCurrentTime || 0);
+    }, [externalCurrentTime]);
+
   const [selectedSegment, setSelectedSegment] = useState(null);
   const [updating, setUpdating] = useState(false);
+  const [requestLipSync, setRequestLipSync] = useState(false);
   
   const scrollContainerRef = useRef(null);
   const activeSegmentRef = useRef(null);
@@ -129,17 +136,12 @@ const VideoTranscriptEditor = ({
 
   // Handler for Update Transcription button
   const handleUpdateTranscription = async () => {
+    if (!onTranscriptEdit) return;
     setUpdating(true);
     try {
-      const response = await fetch('/api/edit-transcript/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ segments: transcriptSegments })
-      });
-      if (!response.ok) throw new Error('Failed to update transcription');
-      const data = await response.json();
-      if (onAudioGenerated && data.audio_url) {
-        onAudioGenerated(data.audio_url);
+      const result = await onTranscriptEdit(transcriptSegments, { lipSync: requestLipSync });
+      if (result?.audioUrl && onAudioGenerated) {
+        onAudioGenerated(result.audioUrl, result);
       }
     } catch (err) {
       alert('Failed to update transcription.');
@@ -169,18 +171,28 @@ const VideoTranscriptEditor = ({
           </div>
           
         </div>
-        <button
-            className="mt-2 px-4 py-2 rounded bg-blue-600 w-full justify-around text-white hover:bg-blue-700 disabled:opacity-50"
+        <div className="mt-2 space-y-2">
+          <label className="flex items-center gap-2 text-xs text-zinc-300">
+            <input
+              type="checkbox"
+              checked={requestLipSync}
+              onChange={(e) => setRequestLipSync(e.target.checked)}
+            />
+            Also run lip sync
+          </label>
+          <button
+            className="px-4 py-2 rounded bg-blue-600 w-full justify-around text-white hover:bg-blue-700 disabled:opacity-50"
             onClick={handleUpdateTranscription}
             disabled={updating}
           >
             {updating ? 'Updating...' : 'Update Transcription'}
           </button>
+        </div>
         
         {/* Current time indicator */}
         <div className="mt-2 flex items-center gap-2 text-xs text-zinc-400">
           <Clock className="w-3 h-3" />
-          <span>{formatTime(currentTime)}</span>
+          <span>{formatTime(currentTime)} / {formatTime(externalDuration || 0)}</span>
           {currentSegment && (
             <>
               <span className="text-zinc-500">·</span>
