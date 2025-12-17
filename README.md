@@ -120,7 +120,10 @@ As per the config.example.yaml
 
 ## Demo Video:
 
-[![Video](public/demovid.mp4)](public/demovid.mp4)
+
+
+https://github.com/user-attachments/assets/d70b955a-6a8f-491b-a299-c9261cddd4a3
+
 
 
 ##  Contributing
