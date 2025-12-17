@@ -1,18 +1,31 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import os
-from services.tts_service import run_voice_cloning_service
-from imagine import ImagineClient, ChatMessage
+import shutil
+from typing import Dict, Any
+
+import google.generativeai as genai
 from pydantic import BaseModel
+from pydub import AudioSegment
 
-
-from pprint import pprint
-from typing import Dict, Any, List
-from services.transcribe import extract_audio_from_video,transcribe,diarize,assign_speakers,save_to_json,OUTPUT_DIR
+from services.tts_service import run_voice_cloning_service
+from services.transcribe import extract_audio_from_video, transcribe, diarize, assign_speakers, save_to_json, OUTPUT_DIR
 from services.speaker_segmentation import SpeakerSegmentationService
 from fastapi.middleware.cors import CORSMiddleware
+
+try:
+    import fal_client
+except ImportError:  # fal-client is optional; only needed for lip sync
+    fal_client = None
+MEDIA_DIR = os.path.join(os.getcwd(), "assests", "users_segements")
+VIDEO_CACHE_PATH = os.path.join(os.getcwd(), "assests", "video", "uploaded_video.mp4")
+os.makedirs(MEDIA_DIR, exist_ok=True)
+os.makedirs(os.path.dirname(VIDEO_CACHE_PATH), exist_ok=True)
+LAST_VIDEO_PATH = None
+
 # Apply CORS
 app = FastAPI()
 app.add_middleware(
@@ -23,8 +36,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 
-app = FastAPI()
 
 def process_video_analysis(video_path: str) -> Dict[str, Any]:
     try:
@@ -111,6 +124,15 @@ async def analyze_video(file: UploadFile = File(...)):
             content = await file.read()
             temp_file.write(content)
             temp_video_path = temp_file.name
+
+        # Keep a copy of the uploaded video for lip sync/output reuse
+        try:
+            shutil.copyfile(temp_video_path, VIDEO_CACHE_PATH)
+            global LAST_VIDEO_PATH
+            LAST_VIDEO_PATH = VIDEO_CACHE_PATH
+        except Exception:
+            # Non-fatal; log in real setup
+            pass
         
         try:
             # Process the video
@@ -127,15 +149,39 @@ async def analyze_video(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 class TranscriptEdit(BaseModel):
     segments: Any
+    lip_sync: bool = False
 
 @app.post("/edit-transcript/")
-async def edit_transcript(transcript: TranscriptEdit):
+async def edit_transcript(request: Request, transcript: TranscriptEdit):
     try:
         output_path = os.path.join(OUTPUT_DIR, "transcript-edited.json")
         save_to_json({"segments": transcript.segments}, output_path)
+
         final_audio_path = run_voice_cloning_service()
-        # Serve the audio file directly
-        return FileResponse(final_audio_path, media_type="audio/wav", filename="final_edited_audio.wav")
+
+        # Copy audio into served media directory
+        audio_filename = os.path.basename(final_audio_path)
+        served_audio_path = os.path.join(MEDIA_DIR, audio_filename)
+        shutil.copyfile(final_audio_path, served_audio_path)
+
+        # Duration metadata for sync
+        audio_duration = AudioSegment.from_file(served_audio_path).duration_seconds
+
+        base_url = str(request.base_url).rstrip("/")
+        audio_url = f"{base_url}/media/{audio_filename}"
+
+        lipsync_video_url = None
+        if transcript.lip_sync and LAST_VIDEO_PATH and fal_client and os.getenv("FAL_KEY"):
+            try:
+                lipsync_video_url = run_lipsync(LAST_VIDEO_PATH, served_audio_path)
+            except Exception:
+                lipsync_video_url = None
+
+        return {
+            "audio_url": audio_url,
+            "audio_duration_sec": audio_duration,
+            "lipsync_video_url": lipsync_video_url,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save transcript: {str(e)}")
 @app.post("/analyze-video-path/")
@@ -143,6 +189,13 @@ async def analyze_video_from_path(video_path: str):
     try:
         if not os.path.exists(video_path):
             raise HTTPException(status_code=404, detail="Video file not found")
+
+        try:
+            shutil.copyfile(video_path, VIDEO_CACHE_PATH)
+            global LAST_VIDEO_PATH
+            LAST_VIDEO_PATH = VIDEO_CACHE_PATH
+        except Exception:
+            pass
         
         result = process_video_analysis(video_path)
         
@@ -152,46 +205,65 @@ async def analyze_video_from_path(video_path: str):
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 class SummarizeRequest(BaseModel):
     context: str
+    language: str = "English"
 
-# init client
-print("Setting up client...")
-client = ImagineClient(
-    api_key="f66499e9-2d54-4adf-85c1-5c9d67a13b1b",
-    endpoint="http://10.190.147.82:5050/v2"
-)
-print("Client connected.")
 
-# health check
-print("Checking health...")
-health = client.health_check()
-pprint(health)
+_gemini_model = None
 
-# list models
-print("Listing models...")
-models = client.get_available_models_by_type()
-pprint(models)
+
+def _get_gemini_model():
+    """Lazy-init the Gemini model so we only configure once."""
+    global _gemini_model
+    if _gemini_model is None:
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_GEMINI_API_KEY")
+        if not api_key:
+            raise RuntimeError("Set GEMINI_API_KEY (or GOOGLE_GEMINI_API_KEY) in the environment.")
+
+        genai.configure(api_key=api_key)
+        model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        _gemini_model = genai.GenerativeModel(model_name)
+    return _gemini_model
+
 
 def summarize_text(context: str, language: str = "English") -> str:
-    """
-    Summarizes the given context in the specified language using the Sarvam-m model.
-    """
-    prompt = f"Summarize the following text in {language}:\n{context}"
-    response = client.chat(
-        messages=[
-            ChatMessage(role="user", content=prompt),
-        ],
-        model="Sarvam-m"
+    prompt = (
+        "You are a concise summarizer. "
+        f"Summarize the following text in {language} with clear bullet points and a 1-2 line overview.\n\n"
+        f"Text:\n{context}"
     )
-    return response.first_content
-
-class SummarizeRequest(BaseModel):
-    context: str
-    language: str = "English"
+    model = _get_gemini_model()
+    response = model.generate_content(prompt)
+    return response.text
 
 @app.post("/summarize")
 def summarize_endpoint(request: SummarizeRequest):
     summary = summarize_text(request.context, request.language)
     return {"summary": summary}
+
+
+def run_lipsync(video_path: str, audio_path: str) -> str:
+    if not fal_client:
+        raise RuntimeError("fal-client is not installed; cannot run lip sync.")
+    if not os.getenv("FAL_KEY"):
+        raise RuntimeError("FAL_KEY not set in environment; cannot run lip sync.")
+
+    video_url = fal_client.upload_file(video_path)
+    audio_url = fal_client.upload_file(audio_path)
+
+    result = fal_client.subscribe(
+        "veed/lipsync",
+        arguments={
+            "video_url": video_url,
+            "audio_url": audio_url,
+        },
+        with_logs=False,
+    )
+
+    video_result = result.get("video")
+    if not video_result or not video_result.get("url"):
+        raise RuntimeError("Lip sync did not return a video URL.")
+
+    return video_result["url"]
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="localhost", port=8000 )

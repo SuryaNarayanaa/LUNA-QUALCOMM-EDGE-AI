@@ -5,8 +5,16 @@ librosa
 sounddevice
 soundfile
 pydub
-numpy
+
+
+numpy<2
+
+# Use the CUDA build of onnxruntime instead of CPU/NPU variants.
+onnxruntime-gpu==1.17.1
+
 coqui-tts
+google-generativeai>=0.8.0
+fal-client
 scipy
 pandas
 pyannote.audio
